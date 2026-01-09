@@ -201,8 +201,8 @@ class DistrictWatch:
                 timeout=self.config.circuit_breaker_timeout
             )
             
-            # Command handler
-            self.command_handler = CommandHandler(self.config, self.notifier)
+            # Command handler (with browser for instant checks)
+            self.command_handler = CommandHandler(self.config, self.notifier, self.browser)
             self.telegram_poller = TelegramPoller(self.notifier, self.command_handler)
             
             # Send startup message
@@ -362,4 +362,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Suppress asyncio cleanup warnings on Windows
+    import warnings
+    warnings.filterwarnings("ignore", category=ResourceWarning)
+    
     asyncio.run(main())

@@ -1,5 +1,5 @@
 """
-Telegram notification system
+Telegram notification system with multi-user support
 """
 
 import asyncio
@@ -17,7 +17,7 @@ class TelegramNotifier:
     def __init__(self, config):
         self.config = config
         self.base_url = f"https://api.telegram.org/bot{config.telegram_token}"
-        self.chat_id = config.telegram_chat_id
+        self.chat_id = config.telegram_chat_id  # Admin chat ID
         self.session: Optional[aiohttp.ClientSession] = None
         self.message_count = 0
     
@@ -34,13 +34,14 @@ class TelegramNotifier:
     async def send_message(
         self,
         text: str,
+        chat_id: Optional[str] = None,
         parse_mode: str = "Markdown",
         disable_preview: bool = True
     ) -> bool:
-        """Send message to Telegram"""
+        """Send message to a specific chat"""
         url = f"{self.base_url}/sendMessage"
         payload = {
-            "chat_id": self.chat_id,
+            "chat_id": chat_id or self.chat_id,
             "text": text,
             "parse_mode": parse_mode,
             "disable_web_page_preview": disable_preview
@@ -63,13 +64,27 @@ class TelegramNotifier:
         
         return False
     
+    async def broadcast(self, text: str) -> int:
+        """Send message to all registered users"""
+        users = self.config.get_all_users()
+        success_count = 0
+        
+        for user_id in users:
+            if await self.send_message(text, chat_id=user_id):
+                success_count += 1
+            else:
+                logger.warning(f"Failed to send to user {user_id}")
+        
+        logger.info(f"Broadcast sent to {success_count}/{len(users)} users")
+        return success_count
+    
     async def send_booking_alert(
         self,
         movie_name: str,
         theaters: List,
         movie_url: str
     ) -> bool:
-        """Send booking availability alert"""
+        """Send booking availability alert to all users"""
         if not theaters:
             return False
         
@@ -106,20 +121,22 @@ class TelegramNotifier:
             f"⏰ {datetime.now().strftime('%I:%M %p, %d %b')}"
         )
         
-        return await self.send_message(message)
+        # Broadcast to all users
+        sent = await self.broadcast(message)
+        return sent > 0
     
     async def send_error_alert(self, error: str) -> bool:
-        """Send error notification"""
+        """Send error notification to admin only"""
         message = (
             "⚠️ *DistrictWatch Error*\n\n"
             f"Error: `{error}`\n\n"
             f"⏰ {datetime.now().strftime('%I:%M %p, %d %b')}\n\n"
             "Will retry automatically..."
         )
-        return await self.send_message(message)
+        return await self.send_message(message)  # Admin only
     
     async def send_circuit_breaker_alert(self, state: str) -> bool:
-        """Send circuit breaker status"""
+        """Send circuit breaker status to admin"""
         if state == "OPEN":
             message = (
                 "🛑 *Circuit Breaker Activated*\n\n"
@@ -133,4 +150,4 @@ class TelegramNotifier:
                 "System recovered. Monitoring resumed.\n\n"
                 f"⏰ {datetime.now().strftime('%I:%M %p, %d %b')}"
             )
-        return await self.send_message(message)
+        return await self.send_message(message)  # Admin only

@@ -124,6 +124,10 @@ class AppConfig:
     log_file: str = "logs/district-watch.log"
     db_path: str = "data/state.db"
     movies_file: str = "data/movies.json"
+    users_file: str = "data/users.json"
+    
+    # Registered users (chat IDs that receive alerts)
+    registered_users: set = field(default_factory=set)
     
     @classmethod
     def from_env(cls) -> 'AppConfig':
@@ -163,11 +167,16 @@ class AppConfig:
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             log_file=os.getenv("LOG_FILE", "logs/district-watch.log"),
             db_path=os.getenv("DB_PATH", "data/state.db"),
-            movies_file=os.getenv("MOVIES_FILE", "data/movies.json")
+            movies_file=os.getenv("MOVIES_FILE", "data/movies.json"),
+            users_file=os.getenv("USERS_FILE", "data/users.json")
         )
         
-        # Load saved movies
+        # Load saved data
         config.load_movies()
+        config.load_users()
+        
+        # Register admin user (from .env) automatically
+        config.register_user(telegram_chat_id)
         
         # Add initial movie from env if no movies configured
         initial_url = os.getenv("MOVIE_URL")
@@ -204,6 +213,57 @@ class AppConfig:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"Warning: Could not save movies config: {e}")
+    
+    def load_users(self) -> None:
+        """Load registered users from JSON file"""
+        if not os.path.exists(self.users_file):
+            return
+        
+        try:
+            with open(self.users_file, 'r') as f:
+                data = json.load(f)
+                self.registered_users = set(str(uid) for uid in data.get("users", []))
+        except Exception as e:
+            print(f"Warning: Could not load users config: {e}")
+    
+    def save_users(self) -> None:
+        """Save registered users to JSON file"""
+        try:
+            Path(self.users_file).parent.mkdir(parents=True, exist_ok=True)
+            with open(self.users_file, 'w') as f:
+                json.dump({"users": list(self.registered_users)}, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save users config: {e}")
+    
+    def register_user(self, chat_id: str) -> bool:
+        """Register a user to receive alerts"""
+        chat_id = str(chat_id)
+        if chat_id not in self.registered_users:
+            self.registered_users.add(chat_id)
+            self.save_users()
+            return True
+        return False
+    
+    def unregister_user(self, chat_id: str) -> bool:
+        """Unregister a user from alerts"""
+        chat_id = str(chat_id)
+        if chat_id in self.registered_users:
+            self.registered_users.discard(chat_id)
+            self.save_users()
+            return True
+        return False
+    
+    def is_registered(self, chat_id: str) -> bool:
+        """Check if user is registered"""
+        return str(chat_id) in self.registered_users
+    
+    def is_admin(self, chat_id: str) -> bool:
+        """Check if user is the admin (from .env)"""
+        return str(chat_id) == str(self.telegram_chat_id)
+    
+    def get_all_users(self) -> list:
+        """Get all registered user chat IDs"""
+        return list(self.registered_users)
     
     def _generate_movie_id(self, name: str, city: str) -> str:
         """Generate unique movie ID"""

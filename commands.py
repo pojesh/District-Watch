@@ -12,9 +12,11 @@ logger = logging.getLogger(__name__)
 class CommandHandler:
     """Handle Telegram bot commands"""
     
-    def __init__(self, config, notifier):
+    def __init__(self, config, notifier, browser=None):
         self.config = config
         self.notifier = notifier
+        self.browser = browser  # For immediate availability checks
+        self.current_chat_id = None  # Track who sent the command
         self.commands = {
             '/start': self.cmd_start,
             '/help': self.cmd_help,
@@ -27,6 +29,9 @@ class CommandHandler:
             '/theaters': self.cmd_theaters,
             '/addtheater': self.cmd_add_theater,
             '/removetheater': self.cmd_remove_theater,
+            '/register': self.cmd_register,
+            '/unregister': self.cmd_unregister,
+            '/users': self.cmd_users,
         }
     
     async def handle_update(self, update: Dict) -> None:
@@ -34,6 +39,8 @@ class CommandHandler:
         try:
             message = update.get('message', {})
             text = message.get('text', '').strip()
+            chat = message.get('chat', {})
+            self.current_chat_id = str(chat.get('id', ''))
             
             if not text or not text.startswith('/'):
                 return
@@ -54,45 +61,63 @@ class CommandHandler:
             await self.send_reply(f"❌ Error: {str(e)}")
     
     async def send_reply(self, text: str) -> None:
-        """Send reply message"""
-        await self.notifier.send_message(text)
+        """Send reply to the user who sent the command"""
+        chat_id = self.current_chat_id or self.config.telegram_chat_id
+        await self.notifier.send_message(text, chat_id=chat_id)
     
     async def cmd_start(self, args: str) -> None:
-        """Welcome message"""
-        await self.send_reply(
-            "🎬 *Welcome to DistrictWatch!*\n\n"
-            "I monitor movie bookings on District.in and send instant alerts.\n\n"
-            "*Quick Start:*\n"
-            "1️⃣ Add a movie: `/add <url> <name> <city>`\n"
-            "2️⃣ View movies: `/list`\n"
-            "3️⃣ Manage theaters: `/theaters <movie_id>`\n\n"
-            "Use /help for all commands."
-        )
+        """Welcome message and auto-register"""
+        # Auto-register user on /start
+        is_new = self.config.register_user(self.current_chat_id)
+        
+        if is_new:
+            await self.send_reply(
+                "🎬 *Welcome to DistrictWatch!*\n\n"
+                "✅ You're now registered for booking alerts!\n\n"
+                "I monitor movie bookings on District.in and send instant alerts.\n\n"
+                "*Quick Start:*\n"
+                "1️⃣ Add a movie: `/add <url> <name> <city>`\n"
+                "2️⃣ View movies: `/list`\n"
+                "3️⃣ Manage theaters: `/theaters <movie_id>`\n\n"
+                "Use /help for all commands."
+            )
+        else:
+            await self.send_reply(
+                "🎬 *Welcome back to DistrictWatch!*\n\n"
+                "You're already registered for alerts.\n\n"
+                "Use /help for all commands."
+            )
     
     async def cmd_help(self, args: str) -> None:
         """Show all commands"""
-        await self.send_reply(
+        is_admin = self.config.is_admin(self.current_chat_id)
+        
+        msg = (
             "📚 *DistrictWatch Commands*\n\n"
-            "*🎬 Movie Management:*\n"
-            "`/add <url> <name> [city]` - Add movie\n"
-            "`/remove <id>` - Remove movie\n"
-            "`/list` - List all movies\n"
-            "`/enable <id>` - Enable monitoring\n"
-            "`/disable <id>` - Pause monitoring\n\n"
-            "*🎭 Theater Management:*\n"
-            "`/theaters <id>` - Show movie's theaters\n"
-            "`/addtheater <id> <name>` - Add theater\n"
-            "`/removetheater <id> <name>` - Remove theater\n\n"
-            "*📊 Information:*\n"
+            "*👤 User Commands:*\n"
+            "`/register` - Subscribe to alerts\n"
+            "`/unregister` - Unsubscribe from alerts\n"
             "`/status` - System status\n"
             "`/help` - This help message\n\n"
-            "*Example:*\n"
-            "```\n"
-            "/add https://district.in/movies/leo-... Leo Chennai\n"
-            "/theaters leo_chennai\n"
-            "/addtheater leo_chennai SPI Cinemas\n"
-            "```"
         )
+        
+        if is_admin:
+            msg += (
+                "*🎬 Movie Management (Admin):*\n"
+                "`/add <url> <name> [city]` - Add movie\n"
+                "`/remove <id>` - Remove movie\n"
+                "`/list` - List all movies\n"
+                "`/enable <id>` - Enable monitoring\n"
+                "`/disable <id>` - Pause monitoring\n\n"
+                "*🎭 Theater Management (Admin):*\n"
+                "`/theaters <id>` - Show movie's theaters\n"
+                "`/addtheater <id> <name>` - Add theater\n"
+                "`/removetheater <id> <name>` - Remove theater\n\n"
+                "*👥 User Management (Admin):*\n"
+                "`/users` - List registered users\n"
+            )
+        
+        await self.send_reply(msg)
     
     async def cmd_add(self, args: str) -> None:
         """Add a movie"""
@@ -237,10 +262,12 @@ class CommandHandler:
         """Show system status"""
         active = self.config.get_active_movies()
         total = len(self.config.movies)
+        users = len(self.config.registered_users)
         
         msg = (
             "📊 *System Status*\n\n"
             f"📽️ Active movies: {len(active)}/{total}\n"
+            f"👥 Registered users: {users}\n"
             f"🎭 Default theaters: {len(self.config.default_theaters)}\n"
             f"⏱️ Check interval: {self.config.check_interval}s\n\n"
         )
@@ -254,7 +281,60 @@ class CommandHandler:
         else:
             msg += "_No movies being monitored_\n"
         
+        # Show registration status for user
+        is_registered = self.config.is_registered(self.current_chat_id)
+        status = "✅ Registered" if is_registered else "❌ Not registered"
+        msg += f"\n*Your status:* {status}\n"
+        
         msg += f"\n⏰ {datetime.now().strftime('%I:%M %p, %d %b %Y')}"
+        await self.send_reply(msg)
+    
+    async def cmd_register(self, args: str) -> None:
+        """Register for alerts"""
+        if self.config.register_user(self.current_chat_id):
+            await self.send_reply(
+                "✅ *Registered Successfully!*\n\n"
+                "You'll now receive booking alerts for all monitored movies.\n\n"
+                "Use /unregister to stop receiving alerts."
+            )
+            logger.info(f"User registered: {self.current_chat_id}")
+        else:
+            await self.send_reply("ℹ️ You're already registered for alerts.")
+    
+    async def cmd_unregister(self, args: str) -> None:
+        """Unregister from alerts"""
+        # Don't allow admin to unregister
+        if self.config.is_admin(self.current_chat_id):
+            await self.send_reply("⚠️ Admin cannot unregister. You'll always receive alerts.")
+            return
+        
+        if self.config.unregister_user(self.current_chat_id):
+            await self.send_reply(
+                "👋 *Unregistered*\n\n"
+                "You'll no longer receive booking alerts.\n\n"
+                "Use /register to subscribe again."
+            )
+            logger.info(f"User unregistered: {self.current_chat_id}")
+        else:
+            await self.send_reply("ℹ️ You're not currently registered.")
+    
+    async def cmd_users(self, args: str) -> None:
+        """List registered users (admin only)"""
+        if not self.config.is_admin(self.current_chat_id):
+            await self.send_reply("❌ This command is only available to the admin.")
+            return
+        
+        users = self.config.get_all_users()
+        
+        if not users:
+            await self.send_reply("👥 No users registered.")
+            return
+        
+        msg = f"👥 *Registered Users ({len(users)})*\n\n"
+        for idx, user_id in enumerate(users, 1):
+            is_admin = "�" if self.config.is_admin(user_id) else ""
+            msg += f"{idx}. `{user_id}` {is_admin}\n"
+        
         await self.send_reply(msg)
     
     async def cmd_theaters(self, args: str) -> None:
@@ -298,7 +378,7 @@ class CommandHandler:
         await self.send_reply('\n'.join(lines))
     
     async def cmd_add_theater(self, args: str) -> None:
-        """Add theater to a movie"""
+        """Add theater to a movie with instant availability check"""
         if not args or len(args.split(maxsplit=1)) < 2:
             await self.send_reply(
                 "❌ *Usage:* `/addtheater <movie_id> <theater_name>`\n\n"
@@ -323,16 +403,76 @@ class CommandHandler:
             keywords=[theater_name.lower()]
         )
         
-        if self.config.add_theater_to_movie(movie_id, theater):
+        if not self.config.add_theater_to_movie(movie_id, theater):
+            await self.send_reply(f"❌ Theater already exists or could not be added")
+            return
+        
+        logger.info(f"Theater added to {movie_id}: {theater_name}")
+        
+        # Check current availability for this theater immediately
+        availability_msg = ""
+        if self.browser:
+            try:
+                await self.send_reply(
+                    f"✅ *Theater Added!*\n\n"
+                    f"🎭 {theater_name}\n"
+                    f"📽️ Movie: {movie.movie_name}\n\n"
+                    "⏳ Checking current availability..."
+                )
+                
+                # Fetch page and check availability
+                from extractor import DataExtractor
+                page_result = await self.browser.fetch_page_content(movie.movie_url)
+                
+                if page_result.get("success"):
+                    extractor = DataExtractor([theater])
+                    extraction = extractor.process_page_data(page_result)
+                    
+                    if extraction.get("success") and extraction.get("theaters"):
+                        found_theaters = extraction["theaters"]
+                        
+                        # Build availability message
+                        availability_msg = (
+                            "🎉 *BOOKINGS ALREADY OPEN!*\n\n"
+                            f"🎬 {movie.movie_name}\n"
+                            f"🎭 {theater_name}\n\n"
+                        )
+                        
+                        for t in found_theaters:
+                            available = [st for st in t.showtimes if st.available]
+                            if available:
+                                times = [st.time for st in available[:6]]
+                                time_str = ", ".join(times)
+                                if len(available) > 6:
+                                    time_str += f" +{len(available) - 6} more"
+                                availability_msg += f"🕐 *Available times:* {time_str}\n"
+                        
+                        availability_msg += (
+                            f"\n🔗 [Book Now]({movie.movie_url})"
+                        )
+                        
+                        await self.send_reply(availability_msg)
+                        return
+                
+                # No availability found
+                await self.send_reply(
+                    f"ℹ️ No bookings open yet for {theater_name}.\n"
+                    "Will monitor and alert when available!"
+                )
+                
+            except Exception as e:
+                logger.error(f"Availability check failed: {e}")
+                await self.send_reply(
+                    f"✅ Theater added! (Availability check failed)\n"
+                    f"Will monitor and alert when bookings open."
+                )
+        else:
             await self.send_reply(
                 f"✅ *Theater Added!*\n\n"
                 f"🎭 {theater_name}\n"
                 f"📽️ Movie: {movie.movie_name}\n\n"
                 f"Use `/theaters {movie_id}` to see all theaters"
             )
-            logger.info(f"Theater added to {movie_id}: {theater_name}")
-        else:
-            await self.send_reply(f"❌ Theater already exists or could not be added")
     
     async def cmd_remove_theater(self, args: str) -> None:
         """Remove theater from a movie"""
