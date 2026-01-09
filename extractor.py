@@ -148,35 +148,95 @@ class DataExtractor:
         return theaters
     
     def extract_from_html(self, html: str) -> List[Theater]:
-        """Fallback HTML parsing"""
+        """Parse HTML for theater listings (District.in specific)"""
         theaters = []
         
         try:
-            soup = BeautifulSoup(html, 'html.parser')
+            soup = BeautifulSoup(html, 'lxml')
             
-            for theater_config in self.target_theaters:
-                for keyword in theater_config.keywords:
-                    elements = soup.find_all(string=re.compile(keyword, re.IGNORECASE))
+            # Find all theater listing elements
+            theater_elements = soup.find_all('li', class_=re.compile(r'MovieSessionsListing_movieSessions'))
+            
+            logger.debug(f"Found {len(theater_elements)} theater elements in HTML")
+            
+            for element in theater_elements:
+                # Get theater name - look for link with theater href pattern
+                theater_name = ""
+                
+                # Find all links and get the one with theater name
+                for link in element.find_all('a'):
+                    href = link.get('href', '')
+                    text = link.get_text(strip=True)
                     
-                    if elements:
-                        time_pattern = r'\b(\d{1,2}:\d{2}\s*(?:AM|PM))\b'
-                        
-                        for element in elements:
-                            context = str(element.parent) if element.parent else ""
-                            times = re.findall(time_pattern, context, re.IGNORECASE)
-                            
-                            if times:
-                                showtimes = [ShowTime(time=t, available=True) for t in times]
-                                theaters.append(Theater(
-                                    name=theater_config.name,
-                                    showtimes=showtimes,
-                                    priority=theater_config.priority
-                                ))
-                                logger.debug(f"HTML fallback: found {len(times)} times for {theater_config.name}")
-                                break
+                    # Theater detail links typically have this pattern
+                    if '/movies/' in href and '-in-' in href and text:
+                        theater_name = text
+                        break
+                
+                if not theater_name:
+                    continue
+                
+                # Check if this matches our target theaters
+                theater_config = self._match_theater(theater_name)
+                if not theater_config:
+                    continue
+                
+                logger.info(f"Found matching theater: {theater_name}")
+                
+                # Get showtimes from timeblock elements
+                showtimes = []
+                timeblocks = element.find_all('li', class_=re.compile(r'MovieSessionsListing_timeblock'))
+                
+                for block in timeblocks:
+                    # Get time div with color indicator
+                    time_div = block.find('div', class_=re.compile(r'.*Col.*MovieSessionsListing_time'))
+                    if not time_div:
+                        time_div = block.find('div', class_=re.compile(r'MovieSessionsListing_time'))
+                    
+                    if not time_div:
+                        continue
+                    
+                    # Get time text (first text node)
+                    time_text = time_div.get_text(separator=' ', strip=True)
+                    
+                    # Parse time - typically first part before any format info
+                    time_match = re.search(r'(\d{1,2}:\d{2}\s*(?:AM|PM))', time_text, re.IGNORECASE)
+                    if not time_match:
+                        continue
+                    
+                    show_time = time_match.group(1).strip()
+                    
+                    # Determine availability by color class
+                    # greenCol = Available, yellowCol = Filling fast, redCol = Almost full (all available)
+                    # greyCol = Sold out (not available)
+                    div_classes = time_div.get('class', [])
+                    class_str = ' '.join(div_classes) if isinstance(div_classes, list) else str(div_classes)
+                    
+                    is_available = 'greyCol' not in class_str
+                    
+                    # Get format (screen name) if any
+                    format_span = time_div.find('span', class_=re.compile(r'MovieSessionsListing_timeblock__frmt'))
+                    format_type = format_span.get_text(strip=True) if format_span else ""
+                    
+                    showtimes.append(ShowTime(
+                        time=show_time,
+                        available=is_available,
+                        format=format_type
+                    ))
+                
+                if showtimes:
+                    available_count = sum(1 for st in showtimes if st.available)
+                    logger.info(f"{theater_config['name']}: {available_count}/{len(showtimes)} shows available")
+                    
+                    theaters.append(Theater(
+                        name=theater_config["name"],
+                        location=theater_name,  # Use full name as location
+                        showtimes=showtimes,
+                        priority=theater_config["priority"]
+                    ))
         
         except Exception as e:
-            logger.error(f"HTML extraction error: {e}")
+            logger.error(f"HTML extraction error: {e}", exc_info=True)
         
         return theaters
     
