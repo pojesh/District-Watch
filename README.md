@@ -123,7 +123,7 @@ district-watch/
 🎬 Leo
 
 1. ⭐ Vettri
-   📍 Anna Nagar
+   📍 Chrompet
    🎬 09:00 AM, 12:30 PM, 03:45 PM
 
 2. ⭐ Rohini Silver Screen
